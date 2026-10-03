@@ -46,6 +46,42 @@ export function validateRequest(raw: unknown): SolveRequest {
       'maxInterval must not exceed 1,000,000 to keep gap products integral',
     );
   }
+
+  // Optional low-battery dormancy model: the two bounds are only meaningful
+  // together (exactly one pause per batch), must be positive integers and
+  // must not be inverted.
+  const hasDormancyLower = obj.dormancyLower !== undefined;
+  const hasDormancyUpper = obj.dormancyUpper !== undefined;
+  if (hasDormancyLower !== hasDormancyUpper) {
+    throw new SolveError(
+      'INVALID_REQUEST',
+      'dormancyLower and dormancyUpper must be provided together',
+    );
+  }
+  let dormancyLower: number | undefined;
+  let dormancyUpper: number | undefined;
+  if (hasDormancyLower && hasDormancyUpper) {
+    if (!isSafeInt(obj.dormancyLower) || !isSafeInt(obj.dormancyUpper)) {
+      throw new SolveError('INVALID_REQUEST', 'dormancyLower and dormancyUpper must be safe integers');
+    }
+    dormancyLower = obj.dormancyLower as number;
+    dormancyUpper = obj.dormancyUpper as number;
+    if (dormancyLower <= 0 || dormancyUpper <= 0) {
+      throw new SolveError('INVALID_REQUEST', 'dormancy bounds must be positive integers');
+    }
+    if (dormancyLower > dormancyUpper) {
+      throw new SolveError('INVALID_REQUEST', 'dormancyLower must be <= dormancyUpper');
+    }
+    // Guard against silent precision loss when the pause shifts timestamp
+    // windows that are already near the supported integer range.
+    if (dormancyUpper > 1_000_000_000_000) {
+      throw new SolveError(
+        'INVALID_REQUEST',
+        'dormancyUpper must not exceed 1e12 to keep shifted time bounds integral',
+      );
+    }
+  }
+
   // Guard against silent precision loss when multiplying the window width
   // by the largest interval, and against time coordinates that cannot be
   // combined exactly with gap products.
@@ -127,5 +163,5 @@ export function validateRequest(raw: unknown): SolveRequest {
     return { id: po.id as string | number, remainder, timeLower, timeUpper };
   });
 
-  return { packets, modulus, countLower, countUpper, minInterval, maxInterval };
+  return { packets, modulus, countLower, countUpper, minInterval, maxInterval, dormancyLower, dormancyUpper };
 }

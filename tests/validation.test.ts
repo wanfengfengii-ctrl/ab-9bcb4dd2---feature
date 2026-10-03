@@ -77,4 +77,50 @@ describe('validateRequest', () => {
     b.countUpper = b.countLower + 2_000_000;
     expect(() => validateRequest(b)).toThrow(SolveError);
   });
+
+  it('accepts a valid dormancy interval', () => {
+    const b = valid();
+    b.dormancyLower = 40;
+    b.dormancyUpper = 60;
+    const r = validateRequest(b);
+    expect(r.dormancyLower).toBe(40);
+    expect(r.dormancyUpper).toBe(60);
+  });
+
+  it('accepts the absence of both dormancy fields', () => {
+    const r = validateRequest(valid());
+    expect(r.dormancyLower).toBeUndefined();
+    expect(r.dormancyUpper).toBeUndefined();
+  });
+
+  it('rejects a dormancy lower bound without its upper bound (and vice versa)', () => {
+    const onlyLower = valid();
+    onlyLower.dormancyLower = 10;
+    expect(() => validateRequest(onlyLower)).toThrow(SolveError);
+    const onlyUpper = valid();
+    onlyUpper.dormancyUpper = 10;
+    expect(() => validateRequest(onlyUpper)).toThrow(SolveError);
+  });
+
+  it('rejects an inverted dormancy interval', () => {
+    const b = valid();
+    b.dormancyLower = 60;
+    b.dormancyUpper = 40;
+    expect(() => validateRequest(b)).toThrow(SolveError);
+  });
+
+  it('rejects non-positive or non-integer dormancy bounds', () => {
+    const zero = valid();
+    zero.dormancyLower = 0;
+    zero.dormancyUpper = 10;
+    expect(() => validateRequest(zero)).toThrow(SolveError);
+    const negative = valid();
+    negative.dormancyLower = -5;
+    negative.dormancyUpper = 10;
+    expect(() => validateRequest(negative)).toThrow(SolveError);
+    const fractional = valid();
+    fractional.dormancyLower = 1.5;
+    fractional.dormancyUpper = 10;
+    expect(() => validateRequest(fractional)).toThrow(SolveError);
+  });
 });

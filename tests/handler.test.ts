@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { handleSolve } from '../src/api/handler.js';
-import { sampleRequest, sampleExpected } from './fixtures/sample.js';
+import { sampleRequest, sampleExpected, dormantSampleRequest, dormantSampleExpected } from './fixtures/sample.js';
 
 describe('handleSolve', () => {
   it('returns the recovered order for the canonical sample', () => {
@@ -42,5 +42,56 @@ describe('handleSolve', () => {
     const a = handleSolve(sampleRequest);
     const b = handleSolve(shuffled);
     expect(a).toEqual(b);
+  });
+});
+
+describe('handleSolve: dormancy model', () => {
+  it('recovers the dormancy pause for the low-battery sample', () => {
+    const res = handleSolve(dormantSampleRequest);
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') throw new Error('expected ok');
+    expect(res.data.order).toEqual(dormantSampleExpected.order);
+    expect(res.data.dormancy).toBeDefined();
+    expect(res.data.dormancy!.duration).toBe(dormantSampleExpected.duration);
+    expect(res.data.dormancy!.boundaryIndex).toBe(dormantSampleExpected.boundaryIndex);
+    expect(res.data.dormancy!.fromId).toBe(dormantSampleExpected.fromId);
+    expect(res.data.dormancy!.toId).toBe(dormantSampleExpected.toId);
+    const carrying = res.data.adjacency.filter((ev) => ev.dormancy !== undefined);
+    expect(carrying).toHaveLength(1);
+    expect(carrying[0].index).toBe(dormantSampleExpected.boundaryIndex);
+  });
+
+  it('leaves legacy responses byte-identical when no dormancy fields are given', () => {
+    const res = handleSolve(sampleRequest);
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') throw new Error('expected ok');
+    expect('dormancy' in res.data).toBe(false);
+    for (const ev of res.data.adjacency) expect('dormancy' in ev).toBe(false);
+  });
+
+  it('rejects a lone dormancy bound and inverted dormancy bounds', () => {
+    for (const body of [
+      { ...sampleRequest, dormancyLower: 10 },
+      { ...sampleRequest, dormancyUpper: 10 },
+      { ...sampleRequest, dormancyLower: 60, dormancyUpper: 40 },
+      { ...sampleRequest, dormancyLower: 0, dormancyUpper: 10 },
+    ]) {
+      const res = handleSolve(body);
+      expect(res.status).toBe('error');
+      if (res.status !== 'error') throw new Error('expected error');
+      expect(res.error.code).toBe('INVALID_REQUEST');
+    }
+  });
+
+  it('returns NO_CONSISTENT_INTERPRETATION with a dormancy status when unsatisfiable', () => {
+    // The pause interval [5, 10] cannot explain the D->E silence of the
+    // low-battery sample.
+    const res = handleSolve({ ...dormantSampleRequest, dormancyLower: 5, dormancyUpper: 10 });
+    expect(res.status).toBe('error');
+    if (res.status !== 'error') throw new Error('expected error');
+    expect(res.error.code).toBe('NO_CONSISTENT_INTERPRETATION');
+    const evidence = res.error.evidence as { dormancyStatus?: string } | undefined;
+    expect(evidence?.dormancyStatus).toBeDefined();
+    expect(['unused', 'crossing', 'used']).toContain(evidence!.dormancyStatus);
   });
 });

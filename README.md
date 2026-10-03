@@ -41,6 +41,28 @@ d * minInterval ≤ t_j - t_i ≤ d * maxInterval,   d = c_j - c_i ≥ 1
 `NO_CONSISTENT_INTERPRETATION` 及**首个无法延伸的约束证据**（阶段、部分次序、
 候选包、时间/计数允许范围）。
 
+### 低电量休眠模型（可选）
+
+浮标在低电量航段会**暂停采样但保持计数器内容**：恢复供电后首个包的时间戳
+包含一段不随计数增长的休眠。若把这段静默误读为缺包，会高估丢包。
+
+请求可同时提供正整数 `dormancyLower` 与 `dormancyUpper`（闭区间），声明本批包
+之间**恰有一次**休眠及其时长范围。两字段必须同时给出、为正整数且下界 ≤ 上界，
+否则为 `INVALID_REQUEST`。启用后求解器联合选择：
+
+- **唯一一对**相邻已观测包承载休眠，及区间内整数休眠时长 `s`；
+- 该对时差约束变为 `d·minInterval + s ≤ t_j − t_i ≤ d·maxInterval + s`，
+  其余相邻约束不变（计数不受休眠影响）。
+
+目标仍沿用原三级（缺包数、偏差、编号序列）；完全并列时依次选**较短休眠**与
+**较早边界**（休眠所在相邻位置更靠前者）。成功响应在 `data.dormancy` 中返回
+休眠时长与两侧包（`boundaryIndex`/`fromId`/`toId`/`fromCount`/`toCount`），
+并在承载休眠的相邻证据 `adjacency[k]` 上给出 `dormancy` 子对象（时长与未加休眠的
+基准范围），其 `allowedTimeGap` 已包含休眠。整体无解时仍返回
+`NO_CONSISTENT_INTERPRETATION`，且首个无法延伸的证据附 `dormancyStatus`：
+`unused`（休眠尚未使用）、`crossing`（正在跨越休眠的延伸被拒）、`used`
+（休眠已用在更早边界）。未提供两字段时，请求、响应与裁决保持原样。
+
 ## HTTP API
 
 ### `GET /health`
@@ -63,6 +85,15 @@ d * minInterval ≤ t_j - t_i ≤ d * maxInterval,   d = c_j - c_i ≥ 1
   "packets": [
     { "id": "A", "remainder": 8, "timeLower": 77, "timeUpper": 83 }
   ]
+}
+```
+
+可选休眠字段（必须成对出现）：
+
+```json
+{
+  "dormancyLower": 40,
+  "dormancyUpper": 60
 }
 ```
 
@@ -106,10 +137,21 @@ d * minInterval ≤ t_j - t_i ≤ d * maxInterval,   d = c_j - c_i ≥ 1
         "satisfied": true
       }
     ],
-    "observedCountRange": { "first": 8, "last": 31 }
+    "observedCountRange": { "first": 8, "last": 31 },
+    "dormancy": {
+      "duration": 50,
+      "boundaryIndex": 3,
+      "fromId": "D",
+      "toId": "E",
+      "fromCount": 21,
+      "toCount": 22
+    }
   }
 }
 ```
+
+`dormancy` 仅在请求启用休眠模型时出现；承载休眠的相邻证据条目同时带有
+`dormancy: { duration, baseAllowedTimeGap }` 子对象。
 
 错误：
 
@@ -122,13 +164,18 @@ d * minInterval ≤ t_j - t_i ≤ d * maxInterval,   d = c_j - c_i ≥ 1
 
 - **边可行性区间化**：每对包的可行计数差被表达为同余等差数列与三类区间
   （原始时间区间、运行时收紧时间窗、绝对计数搜索窗）的交集，避免逐差枚举。
+  休眠模型下另有"承载休眠"的平移变体（时间界上移 `[dormancyLower, dormancyUpper]`）。
 - **分支限界**：Held–Karp 预计算经过剩余包集合的最小计数差完成代价，作为主目标
-  精确下界内联剪枝；相同 (余数, 区间) 的包做对称性破除。
+  精确下界内联剪枝；休眠启用时使用"至多一次休眠平移"的松弛下界。相同
+  （余数， 区间）的包做对称性破除。
 - **三阶段词典序优化**：A 最小化总计数差；B 在主目标最优链上最小化中点偏差；
-  C 用记忆化可行性判定贪心固定每一位最小编号。
+  C 用记忆化可行性判定贪心固定每一位最小编号。休眠启用时，恰一次休眠由叶级
+  检查强制；编号序列（目标 3）横跨所有休眠边界，故逐边界重构字典序最小序列，
+  再按（编号序列、休眠时长、边界）合并——完全并列选较短休眠与较早边界。
 - **时刻优化**：固定次序与计数差后，这是路径差分约束上的整数 L1 问题；通过
   "枢轴值 × 任意上下限紧约束链"枚举候选值，再以滑动窗口最短路 DP 精确求解，
-  并重建字典序最小时刻向量。
+  并重建字典序最小时刻向量。休眠时长取"偏差最优前提下最短的合法休眠"（对承载边
+  做 （偏差， 边差） 词典序 DP 求得）。
 
 ## 本地开发
 
@@ -161,4 +208,7 @@ docker compose ps   # verify 状态为 Exited (0)
 
 `verify` 服务通过 `depends_on: condition: service_healthy` 等待 API 健康后执行
 `scripts/verify.sh`，其中的跨周含缺包样例即
-`tests/fixtures/sample.ts` / `scripts/smoke.mjs` 所用样例。
+`tests/fixtures/sample.ts` / `scripts/smoke.mjs` 所用样例；冒烟另用
+`tests/fixtures/sample.ts` 中的**低电量休眠样例**（必须经过休眠才可解释）核对
+测试、构建与 HTTP 冒烟：带休眠字段应恢复出休眠时长与边界，去掉休眠字段则应为
+`NO_CONSISTENT_INTERPRETATION`。

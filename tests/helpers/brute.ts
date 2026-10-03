@@ -128,3 +128,130 @@ export function makeRng(start: number): () => number {
     return seed / 2147483648;
   };
 }
+
+export interface RefDormantSolution extends RefSolution {
+  /** Chosen dormancy duration inside [dormLower, dormUpper]. */
+  duration: number;
+  /** 0-based adjacency index carrying the dormancy pause. */
+  boundary: number;
+}
+
+/**
+ * Independent exhaustive reference for the dormancy model: exactly one
+ * adjacency of the recovered order carries a pause whose integer duration
+ * lies in [dormLower, dormUpper]; that adjacency's feasible time-difference
+ * range shifts up by the pause duration. Objective order: missing count,
+ * midpoint deviation, id sequence, shorter pause, earlier boundary.
+ */
+export function bruteSolveDormant(
+  packets: PacketInput[],
+  modulus: number,
+  countLower: number,
+  countUpper: number,
+  minInterval: number,
+  maxInterval: number,
+  dormLower: number,
+  dormUpper: number,
+): RefDormantSolution | null {
+  const n = packets.length;
+  const mod = (a: number): number => ((a % modulus) + modulus) % modulus;
+  let best: RefDormantSolution | null = null;
+
+  const order: number[] = [];
+  const usedPkt = new Uint8Array(n);
+  const counts = new Array<number>(n);
+  const times = new Array<number>(n);
+
+  const considerLeaf = (boundary: number): void => {
+    let gapSum = 0;
+    for (let k = 1; k < n; k++) gapSum += counts[k] - counts[k - 1];
+    let dev = 0;
+    for (let k = 0; k < n; k++) {
+      const p = packets[order[k]];
+      dev += Math.abs(2 * times[k] - (p.timeLower + p.timeUpper));
+    }
+    // Shortest pause consistent with the realized boundary difference.
+    const d = counts[boundary + 1] - counts[boundary];
+    const gap = times[boundary + 1] - times[boundary];
+    const duration = Math.max(dormLower, gap - d * maxInterval);
+    const cand: RefDormantSolution = {
+      missing: gapSum - (n - 1),
+      deviation: dev,
+      idSeq: order.map((ix) => packets[ix].id),
+      duration,
+      boundary,
+    };
+    if (
+      best === null ||
+      cand.missing < best.missing ||
+      (cand.missing === best.missing &&
+        (cand.deviation < best.deviation ||
+          (cand.deviation === best.deviation &&
+            (lexIds(cand.idSeq, best.idSeq) < 0 ||
+              (lexIds(cand.idSeq, best.idSeq) === 0 &&
+                (cand.duration < best.duration ||
+                  (cand.duration === best.duration && cand.boundary < best.boundary)))))))
+    ) {
+      best = cand;
+    }
+  };
+
+  const chooseTime = (k: number, boundary: number): void => {
+    const pix = order[k];
+    const p = packets[pix];
+    for (let t = p.timeLower; t <= p.timeUpper; t++) {
+      if (k > 0) {
+        const d = counts[k] - counts[k - 1];
+        const g = t - times[k - 1];
+        const shiftLo = k - 1 === boundary ? dormLower : 0;
+        const shiftHi = k - 1 === boundary ? dormUpper : 0;
+        if (g < d * minInterval + shiftLo || g > d * maxInterval + shiftHi) continue;
+      }
+      times[k] = t;
+      if (k === n - 1) considerLeaf(boundary);
+      else chooseTime(k + 1, boundary);
+    }
+  };
+
+  const chooseCount = (k: number, boundary: number): void => {
+    if (k === n) {
+      chooseTime(0, boundary);
+      return;
+    }
+    const pix = order[k];
+    const p = packets[pix];
+    const from = k === 0 ? countLower : counts[k - 1] + 1;
+    for (let c = from; c <= countUpper; c++) {
+      if (mod(c) !== p.remainder) continue;
+      if (c + (n - 1 - k) > countUpper) break;
+      if (k > 0) {
+        const d = c - counts[k - 1];
+        const shiftLo = k - 1 === boundary ? dormLower : 0;
+        const shiftHi = k - 1 === boundary ? dormUpper : 0;
+        if (p.timeLower - packets[order[k - 1]].timeUpper > d * maxInterval + shiftHi) continue;
+        if (p.timeUpper - packets[order[k - 1]].timeLower < d * minInterval + shiftLo) continue;
+      }
+      counts[k] = c;
+      chooseCount(k + 1, boundary);
+    }
+  };
+
+  const choosePacket = (k: number, boundary: number): void => {
+    if (k === n) {
+      chooseCount(0, boundary);
+      return;
+    }
+    for (let i = 0; i < n; i++) {
+      if (usedPkt[i]) continue;
+      usedPkt[i] = 1;
+      order[k] = i;
+      choosePacket(k + 1, boundary);
+      usedPkt[i] = 0;
+    }
+  };
+
+  for (let boundary = 0; boundary < n - 1; boundary++) {
+    choosePacket(0, boundary);
+  }
+  return best;
+}

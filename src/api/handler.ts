@@ -24,6 +24,10 @@ export interface ApiError {
 export function handleSolve(rawBody: unknown): ApiResponse | ApiError {
   try {
     const req = validateRequest(rawBody);
+    const dormancy =
+      req.dormancyLower !== undefined
+        ? { lower: req.dormancyLower, upper: req.dormancyUpper as number }
+        : undefined;
     const result = solve(
       req.packets,
       req.modulus,
@@ -31,6 +35,7 @@ export function handleSolve(rawBody: unknown): ApiResponse | ApiError {
       req.countUpper,
       req.minInterval,
       req.maxInterval,
+      dormancy,
     );
     return { status: 'ok', data: result };
   } catch (err) {
