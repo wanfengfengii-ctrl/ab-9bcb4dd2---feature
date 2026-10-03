@@ -63,6 +63,43 @@ export function validateRequest(raw: unknown): SolveRequest {
     );
   }
 
+  // Dormancy is opt-in and all-or-nothing: exactly both positive integer
+  // bounds with lower <= upper enable the single-pause interpretation.
+  let dormancy: { lower: number; upper: number } | undefined;
+  const hasLower = obj.dormancyLower !== undefined;
+  const hasUpper = obj.dormancyUpper !== undefined;
+  if (hasLower || hasUpper) {
+    if (!hasLower || !hasUpper) {
+      throw new SolveError(
+        'INVALID_REQUEST',
+        'dormancyLower and dormancyUpper must both be provided or both omitted',
+      );
+    }
+    if (!isSafeInt(obj.dormancyLower) || !isSafeInt(obj.dormancyUpper)) {
+      throw new SolveError(
+        'INVALID_REQUEST',
+        'dormancyLower and dormancyUpper must be safe integers',
+      );
+    }
+    const dormancyLower = obj.dormancyLower as number;
+    const dormancyUpper = obj.dormancyUpper as number;
+    if (dormancyLower <= 0) {
+      throw new SolveError('INVALID_REQUEST', 'dormancyLower must be a positive integer');
+    }
+    if (dormancyLower > dormancyUpper) {
+      throw new SolveError('INVALID_REQUEST', 'dormancyLower must be <= dormancyUpper');
+    }
+    // A pause is added to the ordinary sampling gaps; the resulting time
+    // differences must stay exactly representable as safe integers.
+    if (dormancyUpper > 1e12) {
+      throw new SolveError(
+        'INVALID_REQUEST',
+        'dormancyUpper is outside the supported integer range',
+      );
+    }
+    dormancy = { lower: dormancyLower, upper: dormancyUpper };
+  }
+
   if (!Array.isArray(obj.packets)) {
     throw new SolveError('INVALID_REQUEST', 'field "packets" must be an array');
   }
@@ -127,5 +164,5 @@ export function validateRequest(raw: unknown): SolveRequest {
     return { id: po.id as string | number, remainder, timeLower, timeUpper };
   });
 
-  return { packets, modulus, countLower, countUpper, minInterval, maxInterval };
+  return { packets, modulus, countLower, countUpper, minInterval, maxInterval, dormancy };
 }

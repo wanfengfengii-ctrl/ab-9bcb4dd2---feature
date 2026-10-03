@@ -41,6 +41,40 @@ d * minInterval ≤ t_j - t_i ≤ d * maxInterval,   d = c_j - c_i ≥ 1
 `NO_CONSISTENT_INTERPRETATION` 及**首个无法延伸的约束证据**（阶段、部分次序、
 候选包、时间/计数允许范围）。
 
+### 低电量休眠（可选）
+
+浮标在低电量航段会暂停采样但**计数器内容保持不变**，恢复后首个包的时间戳会包含
+一段不随计数增长的静默；若按普通缺包解释，这段静默会被误判成大量丢包。请求可选地
+同时提供两个**正整数**闭区间边界：
+
+| 字段 | 含义 |
+| --- | --- |
+| `dormancyLower` | 休眠时长下界（正整数） |
+| `dormancyUpper` | 休眠时长上界（`≥ dormancyLower`） |
+
+两项必须同时给出；缺任一项、非正整数或上下界倒置均按 `INVALID_REQUEST` 拒绝。
+两项都不提供时，请求、响应与裁决与旧版完全兼容。
+
+启用后，求解器在原三级目标之上**联合**选择：
+
+- 唯一一对承载休眠的**相邻已观测包**；
+- 闭区间 `[dormancyLower, dormancyUpper]` 内的整数休眠时长 `s`。
+
+承载边 `(i,j)` 的时差约束变为
+
+```
+d * minInterval + s ≤ t_j - t_i ≤ d * maxInterval + s
+```
+
+其余相邻约束保持 `d * minInterval ≤ Δt ≤ d * maxInterval`。优化词典序仍以原三级
+（缺包数、中点总偏差、包编号序列）为准；完全并列时再取**较短休眠**、**较早承载边**。
+成功响应新增顶层 `dormancy`（时长、承载边两侧包与位置、请求区间），且每条逐相邻
+证据 `adjacency[k].dormancy` 标明 `{ duration, carriesDormancy }`，承载边的
+`allowedTimeGap` 已含休眠。整体无解时仍返回 `NO_CONSISTENT_INTERPRETATION`，首个无法
+延伸的证据以 `dormancyStatus` 标明休眠：`NOT_USED`（尚未使用，且该边无法承载）、
+`CROSSING`（该边只有承载休眠才可跨越，但所需时长落在请求区间之外）或 `USED`
+（休眠已在更早的边上使用，并给出该边）。
+
 ## HTTP API
 
 ### `GET /health`
@@ -117,6 +151,21 @@ d * minInterval ≤ t_j - t_i ≤ d * maxInterval,   d = c_j - c_i ≥ 1
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | 请求结构/取值非法 |
 | 422 | `NO_CONSISTENT_INTERPRETATION` | 搜索窗内无整体一致解释（附首个阻断约束证据） |
+
+启用休眠的请求只需在顶层追加 `dormancyLower` / `dormancyUpper`，成功响应的
+`data.dormancy` 例如：
+
+```json
+{
+  "duration": 100,
+  "adjacencyIndex": 2,
+  "fromPosition": 2,
+  "toPosition": 3,
+  "fromId": "p2",
+  "toId": "p3",
+  "range": { "lower": 50, "upper": 150 }
+}
+```
 
 ## 算法概述
 

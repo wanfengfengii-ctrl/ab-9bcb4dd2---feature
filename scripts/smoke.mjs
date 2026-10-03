@@ -34,6 +34,30 @@ const expectedMissing = [
   [23, 29],
 ];
 
+/**
+ * Dormancy-required sample: fixed cadence 10 (modulus 10), counts 0..5, true
+ * times 0,10,20,130,140,150 with a 100-unit sleep between p2 and p3. With
+ * countUpper=10 the jump cannot be explained by missing counters; only a
+ * pause on adjacency 2 makes the batch consistent.
+ */
+const dormancySample = {
+  modulus: 10,
+  countLower: 0,
+  countUpper: 10,
+  minInterval: 10,
+  maxInterval: 10,
+  dormancyLower: 50,
+  dormancyUpper: 150,
+  packets: [
+    { id: 'p5', remainder: 5, timeLower: 149, timeUpper: 151 },
+    { id: 'p0', remainder: 0, timeLower: -1, timeUpper: 1 },
+    { id: 'p3', remainder: 3, timeLower: 129, timeUpper: 131 },
+    { id: 'p1', remainder: 1, timeLower: 9, timeUpper: 11 },
+    { id: 'p4', remainder: 4, timeLower: 139, timeUpper: 141 },
+    { id: 'p2', remainder: 2, timeLower: 19, timeUpper: 21 },
+  ],
+};
+
 function fail(message) {
   console.error(`SMOKE FAILED: ${message}`);
   process.exit(1);
@@ -101,11 +125,76 @@ async function main() {
   const badBody = await bad.json();
   if (badBody.status !== 'error' || !badBody.error.code) fail('error body missing stable code');
 
+  // 4. Dormancy-required sample: the same packets without dormancy bounds
+  //    must be rejected (the silence would otherwise read as missing packets).
+  const { dormancyLower, dormancyUpper, ...withoutDormancy } = dormancySample;
+  void dormancyLower;
+  void dormancyUpper;
+  const noDorm = await fetch(`${baseUrl}/api/v1/recover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withoutDormancy),
+  });
+  if (noDorm.status !== 422) {
+    fail(`dormancy-required sample without bounds returned HTTP ${noDorm.status}`);
+  }
+  const noDormBody = await noDorm.json();
+  if (noDormBody.error.code !== 'NO_CONSISTENT_INTERPRETATION') {
+    fail(`expected NO_CONSISTENT_INTERPRETATION, got ${JSON.stringify(noDormBody)}`);
+  }
+
+  // 5. Dormancy-enabled recovery: unique pause on p2 -> p3 of length 100.
+  const dormRes = await fetch(`${baseUrl}/api/v1/recover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(dormancySample),
+  });
+  if (dormRes.status !== 200) {
+    fail(`dormancy recovery returned ${dormRes.status}: ${await dormRes.text()}`);
+  }
+  const dormBody = await dormRes.json();
+  if (dormBody.status !== 'ok') fail(`dormancy response not ok: ${JSON.stringify(dormBody)}`);
+  const dd = dormBody.data;
+  if (JSON.stringify(dd.order) !== JSON.stringify(['p0', 'p1', 'p2', 'p3', 'p4', 'p5'])) {
+    fail(`dormancy wrong order: ${JSON.stringify(dd.order)}`);
+  }
+  if (JSON.stringify(dd.assignments.map((a) => a.absoluteCount)) !== JSON.stringify([0, 1, 2, 3, 4, 5])) {
+    fail(`dormancy wrong counts: ${JSON.stringify(dd.assignments.map((a) => a.absoluteCount))}`);
+  }
+  if (!dd.dormancy || dd.dormancy.duration !== 100 || dd.dormancy.adjacencyIndex !== 2) {
+    fail(`dormancy info wrong: ${JSON.stringify(dd.dormancy)}`);
+  }
+  if (dd.dormancy.fromId !== 'p2' || dd.dormancy.toId !== 'p3') {
+    fail(`dormancy endpoints wrong: ${JSON.stringify(dd.dormancy)}`);
+  }
+  const carriers = dd.adjacency.filter((e) => e.dormancy?.carriesDormancy);
+  if (carriers.length !== 1) fail('expected exactly one dormancy-carrying adjacency');
+  for (const ev of dd.adjacency) {
+    if (!ev.satisfied) fail(`unsatisfied dormancy adjacency: ${JSON.stringify(ev)}`);
+    const pause = ev.dormancy?.carriesDormancy ? 100 : 0;
+    if (ev.timeGap !== ev.countGap * 10 + pause) {
+      fail(`adjacency ${ev.index} time gap ${ev.timeGap} does not match beats + pause ${pause}`);
+    }
+  }
+
+  // 6. Half-provided dormancy bounds are an invalid request.
+  const half = await fetch(`${baseUrl}/api/v1/recover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...dormancySample, dormancyUpper: undefined }),
+  });
+  if (half.status !== 400) fail(`half dormancy bounds returned HTTP ${half.status}`);
+  const halfBody = await half.json();
+  if (halfBody.error.code !== 'INVALID_REQUEST') fail('half dormancy bounds not INVALID_REQUEST');
+
   console.log('SMOKE PASSED');
   console.log(`  order     : ${data.order.join(' -> ')}`);
   console.log(`  counts    : ${counts.join(', ')}`);
   console.log(`  missing   : ${data.missingCountTotal} packets in ${segments.length} segment(s)`);
   console.log(`  adjacency : all ${data.adjacency.length} constraints satisfied`);
+  console.log(
+    `  dormancy  : ${dd.dormancy.duration} units between ${dd.dormancy.fromId} -> ${dd.dormancy.toId}`,
+  );
 }
 
 main().catch((err) => fail(err.stack ?? String(err)));

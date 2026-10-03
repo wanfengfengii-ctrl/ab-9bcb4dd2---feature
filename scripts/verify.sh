@@ -3,8 +3,9 @@
 #
 #   1. wait for the API health endpoint
 #   2. TypeScript build (tsc, emit to dist/)
-#   3. code tests (vitest run)
-#   4. HTTP smoke check with the cross-week + missing-packet sample
+#   3. code tests (vitest run, including the dormancy-required cases)
+#   4. HTTP smoke check with the cross-week + missing-packet sample and the
+#      dormancy-required sample (a batch that is only explainable by a pause)
 #
 # Exits non-zero on the first failing stage; the container then stops on its
 # own (restart: "no" in compose).
